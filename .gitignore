@@ -2,3 +2,11 @@
 .Rhistory
 .RData
 .Ruserdata
+
+# Quarto intermediates / outputs
+*_files/
+.quarto/
+
+# Rendered outputs
+*.html
+*.tex
