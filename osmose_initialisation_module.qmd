@@ -1,19 +1,64 @@
 ---
-title: "OSMOSE initialisation"
+title: "OSMOSE initialisation module"
 subtitle: "Conceptual background, technical implementation, and user documentation for OSMOSE 4.4"
+author: "Ricardo Oliveros Ramos"
+lang: en-GB
+toc: true
+toc-depth: 2
+number-sections: false
+
 format:
   html:
-    toc: true
-    toc-depth: 2
-    number-sections: false
-    number-depth: 3
-    anchor-sections: true
-    section-divs: true
-    code-overflow: wrap
-    smooth-scroll: true
     theme: cosmo
+    page-layout: article
+    anchor-sections: true
+    smooth-scroll: true
+    code-overflow: wrap
+    fig-cap-location: bottom
+    tbl-cap-location: top
+  docx:
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    # reference-doc: quarto-reference.docx
+  pdf:
+    pdf-engine: lualatex
+    documentclass: scrartcl
+    papersize: a4
+    keep-tex: true
+    geometry:
+      - margin=2.5cm
+    fig-cap-location: bottom
+    tbl-cap-location: top
+    include-in-header:
+      text: |
+        \usepackage{lmodern}
+        \usepackage[T1]{fontenc}
+bibliography: spinup_references.bib
 ---
 
+```{=latex}
+\clearpage
+```
+
+# Summary
+
+Initialisation is a fundamental part of any OSMOSE simulation. Because OSMOSE is a stochastic, school-based, multispecies model, the initial condition is not just a total biomass by species. It must define, directly or indirectly, the demographic and ecological structure from which the simulation begins. In practice, this means specifying or reconstructing enough information to determine total biomass, age or size structure, the number of schools used to represent the population, trophic level, and, depending on the method, spatial distribution. Initialisation therefore conditions the early demographic and trophic dynamics of the model and can influence not only the length of the transient adjustment, but also the long-term regime eventually reached by the simulation.
+
+This point is closely related to, but distinct from, spin-up. Initialisation is the construction of the starting state at simulation time zero. Spin-up is the subsequent adjustment phase during which the model evolves from that imposed state towards a regime more consistent with its equations, parameterisation, and forcing. In some applications, especially steady-state ones, spin-up is a central part of the workflow. In interannual simulations, however, the early transient dynamics are often part of the target of the analysis, so a satisfactory initial condition is one that already captures the relevant demographic and ecological structure at the beginning of the run.
+
+OSMOSE 4.4 currently supports three main conceptual routes for initialisation. The preferred default for most applications is **reconstructed population-level initialisation**. In this workflow, the user provides a data layer, typically biomass, yield, catch-at-length, and a small number of additional inputs, together with the regular species parameterisation already required by OSMOSE. These inputs are used to reconstruct a plausible class-based initial population structure for each focal species. The result is written as a `population.initialization.*` block describing total biomass, biomass allocation among classes, size boundaries, ages, trophic levels, and the number of schools per class. The OSMOSE core simulator then expands this population-level description into the school-based runtime state used at the beginning of the simulation.
+
+The second route is **direct school-based initialisation**. Here, the initial condition is provided explicitly as a restart-like netCDF file referenced through `population.initialization.file`. This file contains one record per school, including species identity, position, abundance, age, length, weight, and trophic level. This is the most explicit and direct representation of the initial state, and it is particularly suitable for restart workflows, coupling applications, or cases where a school-based state already exists. Its main limitation is practical: preparing a valid school-level initial-condition file can be demanding when such a file is not already available.
+
+The third route is **egg seeding initialisation**. This is a legacy, reproduction-based mechanism implemented within the reproduction process of the OSMOSE core simulator. It does not provide a complete initial state directly. Instead, it can generate eggs artificially from a user-defined seeding biomass or abundance when no eggs are produced by mature schools and the simulation is still within the configured seeding period. In practice, this route can serve two related purposes: it can help establish the first reproducing population when mature individuals are initially absent, and it can also act as a safeguard against irreversible collapse by maintaining a minimal reproductive source. It is therefore useful in some situations, but it offers much less direct control over the resulting initial state than the two explicit representations above.
+
+A key practical distinction in OSMOSE 4.4 is the difference between three representations that may appear in the same workflow. First, there is the **data layer**, that is, the observational and biological information used to reconstruct an initial state. Second, there is the generated **population-level initialisation block**, namely the `population.initialization.*` parameters. Third, there is the final **school-based runtime state** created by the OSMOSE core simulator. These are not interchangeable objects, and much of the practical confusion around initialisation comes from moving between them without keeping their roles distinct.
+
+For most applications in OSMOSE 4.4, the recommended workflow is therefore clear: use reconstructed population-level initialisation, inspect the generated `population.initialization.*` block explicitly, and archive both the upstream data-layer inputs and the generated initialisation block. Direct school-based initialisation should be used when an explicit school-level state is already available or required, and egg seeding should be regarded as a complementary route for specialised cases where parameter-free or anti-collapse behaviour is needed. In all cases, the central principle is the same: the initial condition is part of the model definition, and its adequacy should be assessed in relation to the purpose of the simulation, not treated as a purely technical detail.
+
+```{=latex}
+\clearpage
+```
 
 # 1. Introduction
 
@@ -43,26 +88,115 @@ The remainder of the document is organised as follows. Section 2 introduces the 
 
 # 2. Conceptual background
 
+Initialisation is not a minor technical step in OSMOSE. It is the process by which the model is given a starting ecological state from which all subsequent dynamics emerge. Because OSMOSE is stochastic, school-based, size-structured, and multispecies, the initial state cannot be reduced to a single biomass number per species. It must define, explicitly or implicitly, how biomass is distributed across ages, sizes, schools, and space, and how those elements enter the modelled life cycle from the first simulated time step.
+
+This section introduces the main conceptual ideas needed to understand the implemented initialisation methods described later in the document. Its purpose is not to document any particular parameter, but to clarify what an initial condition means in OSMOSE, why it matters, and why practical initialisation methods are needed.
+
 ## 2.1. Initial conditions in ecosystem and population models
 
-## 2.2. Initialisation in a stochastic, school-based model
+In any dynamic model, the initial condition is the state of the system at the beginning of the simulation. Once the model is started, all later states depend jointly on the model structure, the parameter values, the external forcing, and this initial state. Two runs with identical equations, parameters, and forcing can therefore produce different trajectories if they start from different initial conditions.
 
-## 2.3. Initial conditions versus spin-up
+In principle, the initial condition should describe all state variables that are needed to start the simulation. In simple population models, this may mean specifying only abundance or biomass. In more structured models, it may also require the distribution of the population across ages, sizes, stages, or space. In ecosystem models, the problem becomes broader still, because several populations interact simultaneously and their initial states must be specified in a mutually coherent way.
 
-## 2.4. Equilibrium, transient dynamics, and dependence on starting state
+For this reason, initialisation should be understood as part of the model definition rather than as a purely technical pre-processing step. A poor or inconsistent initial condition can generate unrealistic early transients, delay convergence towards a meaningful simulation regime, or even direct the system towards qualitatively different trajectories.
 
-## 2.5. What must be initialised in OSMOSE
+![Illustrative example showing that the same model, under the same parameters and forcing, can produce different trajectories when simulations start from different initial conditions. The figure is schematic and intended only to illustrate the conceptual role of the initial condition.](figures/figure1.png){#fig:initial-conditions-matter fig-align="center"}
 
-- total biomass
-- population structure across size and age
-- trophic level
-- number of schools
-- spatial distribution
+## 2.2. Working definitions
 
-## 2.6. Why practical initialisation methods are needed in OSMOSE
+The terminology used around model initialisation is not always fully consistent across fields. In ocean and climate modelling, some terms have long-established technical meanings [@ouranosNdInitializing; @thornton2005spinup], whereas in ecosystem modelling they are often used more loosely or in a more application-dependent way. In this document, the following working definitions are adopted and interpreted in the context of ecosystem models such as OSMOSE.
 
-## 2.7. From conceptual initial state to implemented input structures
+**Initial condition** refers to the state of the model at simulation time zero [@ouranosNdInitializing; @zhang2005enso]. In OSMOSE, this is not limited to total biomass by species. It includes, explicitly or implicitly, the demographic and ecological structure required to start the simulation, such as biomass distribution across age or size, the number of schools, trophic level, and, depending on the method, spatial position.
 
+**Initialisation** refers to the process of choosing, constructing, or reconstructing that initial condition. Depending on the application, these starting values may come from observations, climatologies, previous model runs, simplified assumptions, or derived state estimates [@ouranosNdInitializing; @seferian2016cmip5]. In ecosystem models, this may also involve reconstructing a structured population state from partial biological and observational information rather than specifying every model entity directly.
+
+**Transient dynamics** refer to the model behaviour that arises because the simulation begins from a particular initial condition that is not yet fully adjusted to the model structure, parameterisation, and forcing [@hewitt2016spinup; @seferian2016cmip5]. In ecosystem models, these transients may involve changes in abundance, demographic structure, trophic interactions, or spatial occupation as the system reorganises from its imposed starting state.
+
+**Spin-up** refers to the adjustment phase during which the model evolves away from the imposed initial state and towards a regime that is dynamically consistent with its equations, parameter values, and forcing [@hewitt2016spinup; @ouranosNdInitializing; @thornton2005spinup]. In ecosystem models, spin-up often involves the establishment of a coherent age or size structure, trophic organisation, and reproductive regime. The duration of spin-up depends on the variables of interest and on how close the initial state is to the regime implied by the model.
+
+**Equilibrium** should not be understood here as a perfectly constant state. In ecosystem models, it is more useful to define equilibrium as a regime in which the long-term tendencies of the variables relevant to the analysis have become sufficiently small for the intended purpose. Shorter-timescale variability may still remain [@thornton2005spinup; @seferian2016cmip5].
+
+**Statistical equilibrium** is the appropriate concept when the model remains variable through time. In that case, what matters is not that every variable becomes constant, but that the mean behaviour, variance, or broader distribution of the simulated state becomes sufficiently stable on the timescales relevant to the analysis [@thornton2005spinup; @ouranosNdInitializing].
+
+**Quasi-equilibrium** refers to a practical rather than absolute notion of equilibrium. A model can be considered to be in quasi-equilibrium when the remaining drift is small enough that it no longer compromises the scientific objective of the simulation, even if some slow adjustment is still present [@seferian2016cmip5; @lavingullon2023timeslices].
+
+**Drift** refers to the residual systematic change that remains because the model has not fully adjusted, or because some part of the imposed starting state, forcing, or coupled structure is not fully consistent with the model’s own preferred regime [@hewitt2016spinup; @seferian2016cmip5]. In ecosystem models, drift may appear as gradual changes in biomass, age structure, trophic organisation, or other slow state variables.
+
+**Memory of the initial condition** refers to the extent to which the simulated state still reflects the imposed starting configuration. This memory is variable-specific. Fast components may lose it quickly, whereas slow demographic, trophic, spatial, or biogeochemical structures may retain it for much longer [@ouranosNdInitializing; @seferian2016cmip5; @lavingullon2023timeslices].
+
+**Attractor** is used here in a broad dynamical sense to denote the regime towards which the model tends under a given set of equations, parameters, and forcing. In practice, this may correspond to a stable equilibrium, a fluctuating statistical regime, or, in some cases, collapse. In this sense, saying that a model “forgets” its initial condition is only meaningful if different initial conditions converge towards the same attractor [@thornton2005spinup; @seferian2016cmip5].
+
+**Adequate spin-up** is therefore variable-specific and question-specific. A simulation is adequately spun up when the remaining influence of the initial condition is small enough for the variables, timescales, and processes relevant to the problem being studied [@thornton2005spinup; @seferian2016cmip5; @lavingullon2023timeslices].
+
+These definitions are especially useful for distinguishing steady-state and interannual applications. In a steady-state application, the initial condition mainly serves to place the model within reach of the regime of interest, and spin-up is a central part of the workflow. In an interannual simulation, by contrast, the early transient dynamics are often themselves part of the target of the analysis. In that case, a satisfactory initial condition is one that already captures the relevant demographic and ecological structure at the start of the simulation [@ouranosNdInitializing; @seferian2016cmip5].
+
+## 2.3. Initialisation in a stochastic, school-based model
+
+The initialisation problem is especially important in OSMOSE because the model does not represent populations as continuous deterministic state variables. Instead, focal species are represented as collections of schools, and each school carries its own state information, including species identity, abundance, age, length, weight, trophic level, and position.
+
+As a result, the initial state of a population in OSMOSE is not just a collection of biomass values for every species. It is a distribution of biomass among many discrete entities, the super-individuals or schools, each of which will undergo growth, mortality, movement, predation, reproduction, and fishing as the simulation unfolds. This means that the same total biomass can correspond to very different effective initial states, depending on how that biomass is allocated among sizes, ages, schools, and locations.
+
+Stochasticity reinforces this point. In a stochastic model, the realised trajectory depends not only on expected quantities but also on the specific configuration of the simulated entities. In OSMOSE, the initial condition is therefore better understood as a structured representation of a population state, not as a single deterministic configuration. This is one of the main reasons why initialisation matters so strongly in practice.
+
+## 2.4. Initial conditions versus spin-up
+
+The need for initialisation is closely related to, but not identical with, the idea of spin-up. In modelling practice, a spin-up period is a preliminary simulation phase during which the model is allowed to adjust from its starting state towards a more internally consistent regime under the chosen forcing and parameters [@hewitt2016spinup; @thornton2005spinup].
+
+Spin-up is often useful because the initial condition supplied by the user is rarely a perfect representation of the dynamic state implied by the model. Even when biomass or demographic structure is approximately correct, the detailed balance between growth, mortality, reproduction, predation, and fishing may require some time to stabilise. Early simulation years can therefore reflect adjustment to the initial condition as much as the processes of real interest.
+
+However, spin-up does not remove the importance of initialisation. The duration and behaviour of the spin-up depend on the starting state, and different initial conditions can lead to different transients and, in some cases, to different long-term regimes. Starting closer to a realistic internal state may shorten the adjustment period and improve the usefulness of the early simulation years. Starting from an inconsistent or poorly structured state may instead generate long or misleading transients.
+
+In other words, spin-up is not a substitute for initialisation. It is a way to let the model adjust from the initial state that has been chosen.
+
+![Schematic example distinguishing the initialisation phase, the spin-up phase, and the later stabilised regime. The figure is illustrative rather than model-specific.](figures/figure3.png){#fig:init-spinup-regime fig-align="center"}
+
+The distinction between initialisation and spin-up is especially important when comparing simulation objectives. In a steady-state application, the main purpose of the initial condition may simply be to place the system within reach of the regime of interest, and spin-up is then a central part of the workflow. In an interannual simulation, by contrast, the early transient dynamics are often part of the target of the analysis. In that case, a satisfactory initial condition is one that already captures the relevant demographic and ecological structure at the beginning of the simulation, so that the early trajectory reflects the intended system dynamics rather than only adjustment from an artificial starting state.
+
+## 2.5. Equilibrium, transient dynamics, and dependence on starting state
+
+A common intuition in modelling is that, after a sufficiently long spin-up, the model “forgets” its initial condition. In practice, this intuition is only partly true. Some aspects of the starting state may indeed fade with time, but the speed and extent of that forgetting depend on the structure of the model and on the nature of the processes involved [@seferian2016cmip5; @lavingullon2023timeslices].
+
+In OSMOSE, the initial condition affects the early demographic structure, the first reproduction events, the onset of predation interactions, and the school composition of the system. These effects can influence the transient response of the model over several years. Even when the system approaches a statistical equilibrium or quasi-equilibrium, that approach may depend on the initial configuration of schools and cohorts.
+
+Different initial conditions may alter not only the duration of the transient adjustment, but also the equilibrium or stabilised regime eventually reached by the simulation. If one initial condition leads to persistence and another to collapse, then the collapse cannot meaningfully be described as a case in which the model has forgotten the initial state. Rather, the initial condition has selected a qualitatively different long-term outcome.
+
+![Illustrative example showing that different initial conditions can influence not only transient dynamics but also the equilibrium or long-term regime reached by the model.](figures/figure2.png){#fig:init-different-equilibria fig-align="center"}
+
+This point is especially relevant when the model is calibrated or interpreted over a limited time window. If the early dynamics of the simulation are strongly shaped by the initial condition, then the apparent fit to observations or the apparent response to forcing may partly reflect initialisation choices rather than only the core parameterisation. A technically valid initial condition is therefore not automatically a satisfactory one. What matters is whether it produces a coherent ecological starting state relative to the objectives of the simulation.
+
+## 2.6. What must be initialised in OSMOSE
+
+At a conceptual level, initialisation in OSMOSE must provide enough information to define the starting state of each focal population in a school-based representation. This involves several distinct components.
+
+First, each population must be given a total initial biomass or an equivalent amount of population material from which abundance can be inferred. Without this, there is no starting population to simulate.
+
+Second, this biomass must be distributed across demographic structure. In practice, that means allocating the population across age and size classes, or directly across schools already characterised by age and size. This is essential because growth, mortality, maturity, predation vulnerability, and fishing selectivity all depend on age or size.
+
+Third, the initial state must define the number of schools used to represent the population. Since OSMOSE operates on schools rather than on a continuous biomass density, the way biomass is partitioned among schools is part of the initial condition itself.
+
+Fourth, trophic level must be assigned, at least in a provisional way, so that schools enter the simulation with a defined trophic state. Even if trophic level is not the main driver of demographic dynamics, it is part of the state variables tracked by the model.
+
+Fifth, some representation of spatial distribution is needed. In direct school-based initialisation this is explicit, because each school is given spatial coordinates. In reconstructed population-level initialisation the spatial component is more indirect, but the initial state must still ultimately be compatible with the spatial structure of OSMOSE.
+
+These components show why initialisation in OSMOSE cannot be reduced to “setting an initial biomass”. The model requires a structured initial population state.
+
+## 2.7. Why practical initialisation methods are needed in OSMOSE
+
+Although the conceptual requirements of initialisation are broad, users rarely have direct empirical access to a complete school-level state at the beginning of a simulation. In most applications, they do not know the exact abundance, age, size, trophic level, and position of every school that should exist in the model domain at the initial time.
+
+Instead, users typically have partial information: total biomass estimates, survey indices, yield series, catch-at-length data, growth and maturity parameters, or restart files from previous simulations. The purpose of the initialisation module is therefore to bridge the gap between the ecological state that the model requires and the information that users actually have.
+
+Different methods achieve this in different ways. Direct school-based initialisation uses an explicit school file when such a file already exists. Reconstructed population-level initialisation uses species-level information to infer a plausible class-based starting state, which the OSMOSE core simulator later expands into schools. Egg seeding initialisation uses a reproduction-based mechanism to let the model generate early cohorts when no mature population is initially available.
+
+All these methods respond to the same practical problem: the full initial state required by OSMOSE is rarely observed directly, so it must either be supplied from a previous model state, reconstructed from partial information, or allowed to emerge indirectly through model dynamics.
+
+## 2.8. From conceptual initial state to implemented input structures
+
+The conceptual initial state described above is not represented in a single unique format in OSMOSE 4.4. Instead, the model supports different implemented input structures corresponding to different initialisation strategies.
+
+In direct school-based initialisation, the implemented input is a restart-like netCDF file containing one record per school. In reconstructed population-level initialisation, the implemented input is a set of `population.initialization.*` parameters that describe biomass and structure at class level, from which the OSMOSE core simulator creates schools at runtime. In egg seeding initialisation, the implemented input is neither a school table nor a class-based initial population block, but a set of seeding controls that allow the early population to emerge through reproduction.
+
+This distinction between conceptual initial state and implemented input structure is important. Different methods may ultimately aim to represent the same underlying ecological idea—a starting population distributed across sizes, ages, schools, and space—while using different technical encodings to do so. The role of the following sections is therefore to explain how OSMOSE 4.4 moves from these conceptual requirements to the concrete methods and parameters that users must configure.
 
 # 3. Overview of initialisation methods in OSMOSE 4.4
 
@@ -169,7 +303,7 @@ This approach was originally developed in a data-rich context, in which biomass,
 
 At a high level, the workflow can be summarised as follows:
 
-**data-layer inputs and regular biological parameterisation** $\rightarrow$ **single-species reconstruction of the initial population** $\rightarrow$ **generation of `population.initialization.*` parameters** $\rightarrow$ **creation of schools by the Java initialisation code**
+![](figures/population-level_initialisation.png){#fig:population-level_initialisatio fig-align="center"}
 
 ## 4.2. Two-layer structure of the method
 
@@ -260,7 +394,7 @@ In addition to the observational data just described, the method depends on a br
 
 These reused parameters include, among others:
 
-- growth parameters such as `species.k`, `species.linf`, `species.t0`, `species.vonbertalanffy.threshold.age`, and `species.egg.size`;
+- growth parameters such as `species.k`, `species.linf`, `species.t0`, `species.egg.size`, and `species.vonbertalanffy.threshold.age`;
 - length–weight parameters such as `species.length2weight.condition.factor` and `species.length2weight.allometric.power`;
 - maturity parameters such as `species.maturity.size`, `species.maturity.l50`, or `species.maturity.age`;
 - fecundity and reproductive timing information used through the regular reproduction configuration;
@@ -738,67 +872,337 @@ Restart-derived generation of population-level inputs is not really an alternati
 
 Against this background, reconstructed population-level initialisation remains the preferred general-purpose workflow in OSMOSE 4.4. It offers the most practical balance between explicitness and usability. The methods described in the present section should therefore be understood primarily as complementary routes: useful, sometimes essential, but generally secondary to the default population-level workflow documented in Section 4.
 
+
 # 6. User guidance and parameter documentation
+
+This section is intended as a practical guide for configuring initialisation in OSMOSE 4.4. The previous sections described the conceptual logic of the main methods and the way the current implementation operates. The present section focuses on user decisions: how to choose an initialisation method, what parameters must be supplied, what they mean, and what checks should be performed before running a simulation.
+
+The most important practical point is that OSMOSE 4.4 supports more than one representation of the initial state. In the reconstructed population-level initialisation, the direct initial state is a population-level parameter block that the OSMOSE core simulator later expands into schools. In the direct school-level initialisation, the direct initial state is already a school-by-school file. In egg seeding initialisation, the early population emerges indirectly through seeded reproduction. Because these methods operate differently, users should first decide which workflow is appropriate for their application before assembling the corresponding parameter set.
 
 ## 6.1. How to choose an initialisation method
 
+In most ordinary modelling applications, reconstructed population-level initialisation should be the preferred starting point. It provides a practical compromise between explicitness and usability, because it allows the initial state to be reconstructed from standard species parameterisation together with biomass and fishery information, without requiring a hand-built school-level file. It is especially appropriate when the user has a conventional OSMOSE configuration with growth, maturity, fecundity, and length–weight parameters already defined, and when at least some information on biomass, yield, or catch-at-length is available.
+
+Direct school-level initialisation should be preferred when the user already has an explicit school-level state and wishes to reuse it directly. Typical examples include restart workflows, coupling applications, or cases where a prepared school-level file is available from a previous OSMOSE run or from an external process. This route is the most explicit, but it also requires the most detailed input.
+
+Egg seeding initialisation should be reserved for cases where an indirect, reproduction-based route is acceptable or desirable. It should not normally be the first choice when an explicit or inspectable initial state is required.
+
+The choice can therefore be summarised as follows:
+
+- use **reconstructed population-level initialisation** for most general applications, specially for trasient simulation experiments and hindcast applications;
+- use **direct school-level initialisation** when an explicit school file is already available or required;
+- use **egg seeding initialisation** only when this feature is intentionally needed.
+
 ## 6.2. Recommended workflows by data context
 
-- data-rich
-- partial data
-- biomass guess only
-- direct restart-based initialisation
-- manual provision of `population.initialization.*`
+### 6.2.1. Data-rich workflow
 
-## 6.3. Parameter reference, organised by group
+The data-rich workflow corresponds to the original design context of reconstructed population-level initialisation. In this case, the user supplies, for each focal species, an observed biomass series, a biomass cutoff size, a yield series, and catch-at-length information, together with the standard species biological parameterisation. This is the recommended workflow whenever such information is available.
 
-- method-selection flags
-- egg seeding parameters
-- netCDF initialisation parameters
-- data-layer parameters
-- `population.initialization.*` parameters
-- biological parameters required indirectly
-- selectivity parameters
+In practice, the user enables reconstructed population-level initialisation, provides the data-layer inputs, checks that growth, maturity, reproduction, and length–weight parameters are already defined in the regular OSMOSE parameterisation, and then generates the `population.initialization.*` block. This is the most informative workflow because the reconstruction is constrained by both abundance-related and fishery-related information.
 
-## 6.4. For each parameter: meaning, units, expected format, when required
+### 6.2.2. Moderate-data workflow
+
+When only part of the intended data set is available, reconstructed population-level initialisation can still be used, but the reconstruction will depend more strongly on the assumed biological and selectivity settings. A common example is a situation where biomass and yield are available but catch-at-length is not. In that case, the user must provide a selectivity function through the corresponding selectivity parameters, because selectivity can no longer be inferred empirically from observed size composition.
+
+This workflow remains perfectly valid, but the resulting initial state should be inspected carefully, especially the size structure, the implied fishing pattern, and the estimated larval mortality.
+
+### 6.2.3. Data-poor workflow
+
+In some cases, the user may not have an observed biomass series and may instead provide only an approximate biomass guess. This corresponds to one of the later extensions added to the original reconstructed population-level method to support more data-poor situations. The resulting configuration is useful, but it is less strongly constrained than the intended data-rich setup.
+
+This workflow is particularly relevant for species that are included as focal species but for which formal biomass estimates are not available. In such cases, the biomass guess should be interpreted as a practical approximation used to obtain a coherent starting state rather than as a strict observation target. Is strongly recommended that this biomass guess estimate is calibrated in a later stage of the model development. 
+
+### 6.2.4. Direct school-level workflow
+
+When a school-level initial-condition file is already available, the simplest and most explicit workflow is to provide that file directly through `population.initialization.file`. This avoids the need to reconstruct a class-based population block and is the natural route for restart situations.
+
+This workflow is also the most suitable one when exact school-level information, including spatial position, is important to the user. By contrast, reconstructed population-level initialisation is primarily designed to recover demographic structure and biomass distribution rather than a full school-level spatial state.
+
+### 6.2.5. Manual population-level workflow
+
+A further possibility is to provide the `population.initialization.*` parameters manually. This is effectively a manual version of population-level initialisation, in which the user constructs the parameter block directly without using the reconstruction procedure. It can be useful when the user already has a suitable class-based description of the initial state and wants direct control over the population-level input.
+
+This route is flexible, but it also places responsibility on the user to ensure that the parameter block is internally consistent, especially with respect to class definitions, vector lengths, biomass allocation, and school counts. This route is notably useful in a data-rich setup and only for species that are central for the objectives of the modelling work. As the reconstructed population-level initialisation operates at the species-level, this manual approach can be combined with the automated population-level initialisation.
+
+## 6.3. Parameter reference by group
+
+The parameters involved in initialisation can be organised into six main groups: method-selection flags, seeding parameters, direct school-level initialisation parameters, data-layer parameters for reconstructed population-level initialisation, the resulting `population.initialization.*` block, and the biological and selectivity parameters required indirectly by the reconstruction procedure.
+
+### 6.3.1. Method-selection flags
+
+The main method-selection flag for reconstructed population-level initialisation is:
+
+```text
+population.initialization.relativebiomass.enabled = TRUE
+```
+
+Despite the historical name of the parameter, this flag activates the reconstructed population-level route documented in Section 4, and it might be changed in a future release. In practice, it indicates that OSMOSE should use the population-level parameterised representation rather than relying exclusively on seeding or on a direct school-level file.
+
+Users should treat this parameter name as part of the OSMOSE 4.4 implementation rather than as the conceptual name of the method.
+
+### 6.3.2. Egg seeding parameters
+
+Egg seeding is controlled principally through:
+
+```text
+population.seeding.year.max
+population.seeding.biomass.spX
+population.seeding.abundance.spX
+```
+
+The parameter `population.seeding.year.max` gives the maximum duration of seeding in years. It is converted internally into model time steps.
+
+The parameters `population.seeding.biomass.spX` and `population.seeding.abundance.spX` provide the species-specific seeding quantities. Which one is effectively used depends on reproduction mode: oviparous species use biomass-based seeding, whereas viviparous species use abundance-based seeding.
+
+In practical terms, users should ensure that the chosen seeding quantity is consistent with the species reproduction mode and with the intended use of seeding, whether as a bootstrap mechanism or as a collapse safeguard.
+
+### 6.3.3. Direct school-level initialisation parameter
+
+Direct school-level initialisation uses:
+
+```text
+population.initialization.file
+```
+
+This parameter points to a restart-like netCDF file containing one record per school. The file is the initial condition itself and must therefore already contain the school-level state in a valid format.
+
+### 6.3.4. Data-layer parameters for reconstructed population-level initialisation
+
+The data layer for reconstructed population-level initialisation includes parameters that provide the information needed to reconstruct the class-based population structure. These include, among others:
+
+```text
+observed.biomass.file.spX
+observed.biomass.ndtPerYear.spX
+observed.biomass.cutoff.size.spX
+observed.biomass.guess.spX
+
+fisheries.catchatlength.file.spX
+fisheries.catchatlength.ndtPerYear.spX
+
+fisheries.yield.file.spX
+fisheries.yield.ndtPerYear.spX
+
+species.egg.stage.duration.spX
+```
+
+The biomass file and yield file provide the main abundance and fishery targets used in the reconstruction. The biomass cutoff size defines the lower size limit above which reconstructed biomass is compared with the biomass observation. The biomass guess provides a fallback approximation when a full biomass time series is unavailable. The catch-at-length file provides size-composition information that can be used to infer selectivity empirically. Egg-stage duration enters the mortality calculation used internally by the reconstruction method.
+
+Users should remember that these parameters belong to the data layer. They are used to generate the initial condition, but they are not the initial condition itself.
+
+A major practical advantage of reconstructed population-level initialisation is that most of the biological parameters it uses are already part of the regular OSMOSE species configuration. These are not usually redefined specifically for initialisation. Instead, the method reuses them. Relevant examples include growth parameters, length–weight parameters, maturity descriptors, reproductive parameters, lifespan, and sex ratio.
+
+From a user perspective, this means that the consistency of initialisation depends strongly on the consistency of the ordinary species parameterisation. Initialisation problems are therefore often not caused by the initialisation flags themselves, but by unrealistic or incompatible biological settings elsewhere in the configuration.
+
+When catch-at-length is unavailable, users must provide selectivity parameters so that fishing mortality can be distributed across sizes consistently with an assumed selectivity curve. Depending on the selected form, relevant parameters may include:
+
+```text
+fisheries.selectivity.type.spX
+fisheries.selectivity.l50.spX
+fisheries.selectivity.l75.spX
+fisheries.selectivity.l25.spX
+fisheries.selectivity.l0.spX
+fisheries.selectivity.l1.spX
+fisheries.selectivity.plateau.spX
+fisheries.selectivity.breaks.spX
+fisheries.selectivity.values.spX
+```
+
+These parameters are only needed when empirical catch-at-length data are not available or not used. Their interpretation depends on the selectivity type, so users should check carefully that the selected functional form matches the information they actually have.
+
+
+### 6.3.5. Population-level initialisation parameters
+
+The direct population-level initialisation block used by the OSMOSE core simulator consists mainly of:
+
+```text
+population.initialization.biomass.spX
+population.initialization.relativebiomass.spX
+population.initialization.size.spX
+population.initialization.age.spX
+population.initialization.tl.spX
+population.initialization.nschool.spX
+```
+
+The meaning of these parameters is as follows.
+
+`population.initialization.biomass.spX` gives the total initial biomass of the species in tonnes.
+
+`population.initialization.relativebiomass.spX` gives the relative biomass allocation among the initial classes.
+
+`population.initialization.size.spX` gives the class boundaries in centimetres. This is a critical point: the values define class limits, not class centres. A vector of length \(N+1\) defines \(N\) size classes.
+
+`population.initialization.age.spX` gives the representative age in years associated with each class.
+
+`population.initialization.tl.spX` gives the class-level trophic level assigned at initialisation.
+
+`population.initialization.nschool.spX` gives the number of schools to be created in each class.
+
+Depending on the configuration, the generated initialisation block may also include a larval mortality-related parameter such as:
+
+```text
+mortality.additional.larva.rate.spX
+```
+
+or
+
+```text
+initialization.additional.larva.rate.spX
+```
+
+Users should therefore inspect the full generated block rather than assuming that only the six core vectors will be present.
+
+
+## 6.4. Practical meaning, units, and expected formats
+
+A recurring source of difficulty in OSMOSE initialisation is that many parameters are technically valid but conceptually misinterpreted. For that reason, it is useful to summarise the most important expected units and formats.
+
+Biomass quantities such as `population.initialization.biomass.spX` and `population.seeding.biomass.spX` are expressed in tonnes. School-level weight in direct school-level files is expressed in grams. Length quantities are expressed in centimetres. Ages in population-level initialisation are expressed in years and later converted internally by the OSMOSE core simulator into time-step units.
+
+Vectors defining class-level population structure must have consistent lengths. For a given species, `relativebiomass`, `age`, `tl`, and `nschool` must all have the same number of values, and that number must match the number of classes implied by the size vector. Since the size vector defines boundaries, its length must be one greater than the number of classes.
+
+For time-series inputs, users must ensure that the associated `ndtPerYear` parameters correspond to the actual temporal resolution of the file. This is particularly important for biomass, yield, and catch-at-length inputs. An incorrect time resolution will not simply rescale the input; it can alter the interpretation of the data by the reconstruction procedure.
 
 ## 6.5. Common pitfalls
 
-- confusing the data layer with the initialisation layer
-- misunderstanding size bins
-- inconsistent vector lengths
-- ages in years versus time steps
-- biomass cutoff interpretation
-- implausible larval mortality estimates
-- inconsistent growth/maturity settings
+### 6.5.1. Confusing the data layer with the initialisation layer
+
+This is probably the most common source of misunderstanding. The data layer consists of observational inputs and auxiliary parameters used to reconstruct the initial state. The initialisation layer consists of the `population.initialization.*` parameters that actually define the direct population-level input used by the OSMOSE core simulator. The two should never be treated as interchangeable.
+
+### 6.5.2. Misinterpreting `population.initialization.size.spX`
+
+Users often assume that the size vector gives representative class sizes. In fact, it gives class boundaries. This distinction is crucial, because the simulator draws school lengths within these intervals. An incorrect interpretation of the size vector will therefore affect the realised school structure.
+
+### 6.5.3. Inconsistent vector lengths
+
+Population-level vectors must be mutually consistent. If `relativebiomass`, `age`, `tl`, and `nschool` do not all match the number of classes defined by the size vector, the initialisation block is invalid. Users who provide population-level parameters manually should check this systematically.
+
+### 6.5.4. Mixing years and time steps
+
+Ages in the population-level parameter block are supplied in years, whereas the simulator uses internal time-step units. Time-series inputs also depend on the correct `ndtPerYear` specification. Confusion between years and time steps is therefore a frequent source of subtle errors.
+
+### 6.5.5. Misunderstanding the biomass cutoff size
+
+The biomass cutoff size is not a biological maturity threshold and not a population truncation threshold. It is part of the observation model used during reconstruction: it determines which part of the reconstructed biomass is compared with the biomass index. An unrealistic cutoff may therefore distort the fit even if all other settings are correct.
+
+### 6.5.6. Implausible larval mortality estimates
+
+Very low or otherwise implausible larval mortality estimates should not simply be accepted as numerical output. They often indicate inconsistency among fecundity, maturity, growth, biomass, or yield inputs. Users should treat them as a diagnostic signal and re-examine the biological parameterisation.
+
+### 6.5.7. Underconstrained reduced-data configurations
+
+Reconstructed population-level initialisation can be used in data-poor situations, but reduced-input setups necessarily place more weight on assumptions. Users should be especially cautious when relying on biomass guesses, assumed selectivity, or sparse fishery information. Such workflows are useful, but they do not constrain the reconstruction in the same way as the intended data-rich setup.
 
 ## 6.6. Diagnostics and checks users should perform
 
+Before running OSMOSE with a new initialisation setup, users should verify at least the following points.
+
+First, confirm that the intended method is actually selected and that no incompatible method-specific parameters are being mixed unintentionally.
+
+Second, if reconstructed population-level initialisation is used, inspect the generated `population.initialization.*` block directly. Check that total biomass values are plausible, that the relative biomass vectors sum to approximately one, that class boundaries are sensible, and that the age and school-count vectors have consistent lengths.
+
+Third, compare reconstructed biomass and yield with the supplied targets whenever those targets exist. The purpose of the reconstruction is not to reproduce every input perfectly, but a large mismatch should be investigated before the initial state is accepted.
+
+Fourth, inspect larval mortality estimates and the resulting demographic structure for plausibility. Extreme or incoherent values often indicate a deeper inconsistency in the life-history settings.
+
+Fifth, when using direct school-level initialisation, verify that the school-level file contains all required variables and that units are consistent with OSMOSE expectations.
+
+Finally, when using egg seeding, ensure that the seeding quantity and duration are consistent with the intended role of seeding. A value intended only as a minimal safeguard should not accidentally dominate early population dynamics, while a value intended to bootstrap a missing population should not be so small that ordinary reproduction never becomes established.
+
 ## 6.7. Best-practice recommendations for OSMOSE 4.4
+
+For most applications, the best practice is to adopt reconstructed population-level initialisation as the default route and to use the ordinary OSMOSE species parameterisation as the biological foundation of the reconstruction. This is the workflow for which the module is most coherent and most informative.
+
+Whenever possible, users should favour the data-rich form of the reconstruction, with biomass, yield, and catch-at-length information all supplied at the appropriate temporal resolution. Reduced-data workflows remain valuable, but they should be treated as practical approximations rather than as equally constrained alternatives.
+
+Users should document clearly whether they are working at the data-layer level, the population-level initialisation level, or the school-level representation level. Much confusion in practice arises from moving between these representations without stating which one is being inspected or modified.
+
+When direct school-level initialisation is used, users should archive the associated file carefully, because it is the initial condition itself. When reconstructed population-level initialisation is used, users should archive both the data-layer inputs and the generated `population.initialization.*` block. This is important for reproducibility, because the generated block is the actual initial state used by the simulator, while the data-layer inputs explain how that state was obtained.
+
+Finally, users should regard egg seeding as a complementary method rather than as the default general-purpose route. It remains useful in some applications, especially when a data-free or anti-collapse mechanism is desired, but it offers much less direct control over the resulting initial state than the two explicit representations documented in this report.
+
+In summary, good initialisation practice in OSMOSE 4.4 depends on two linked principles: choose the representation that matches the available information, and inspect the resulting initial state explicitly before accepting it as the starting point of a simulation.
 
 # 7. Limitations and outlook
 
-## 7.1. Historical accumulation of patches in the current implementation
+The initialisation module implemented in OSMOSE 4.4 is functional and flexible, but it also reflects the historical evolution of the model. The different methods documented in the preceding sections were not all designed at the same time or for the same modelling context. As a result, the current implementation combines conceptually distinct workflows, legacy mechanisms retained for practical reasons, and later extensions introduced to increase applicability. This section summarises the main limitations of the present implementation and explains why a broader recoding is planned for a future release.
+
+## 7.1. Historical accumulation of methods and patches
+
+One of the main limitations of the current initialisation module is that it is the product of successive additions rather than a single unified design. Egg seeding initialisation belongs to an older stage in the development of OSMOSE, when explicit alternatives for describing the initial state were more limited. Direct school-level initialisation arose naturally from restart and coupling needs. Reconstructed population-level initialisation was later developed to provide a more practical route for ordinary applications. On top of that, additional branches were progressively introduced to support more data-poor contexts.
+
+This history is understandable and, in many ways, scientifically productive. However, it also means that the current module includes several overlapping concepts and several configuration layers that are not always immediately transparent to users. Some parameter names reflect earlier terminology rather than the most descriptive current terminology, and some procedures are best understood as utilities or bridges between workflows rather than as cleanly separated methods.
 
 ## 7.2. Consequences of the original data-rich design
 
-## 7.3. Practical limitations in data-poor contexts
+Reconstructed population-level initialisation was originally developed in a data-rich context, where biomass, yield, and catch-at-length information were normally available for focal species. This remains the context in which the method is most coherent and most strongly constrained.
 
-## 7.4. Conceptual limits of the single-species approximation
+When the method is used outside that original setting, it can still be practically useful, but some of its assumptions become more exposed. For example, when biomass is replaced by a biomass guess, or when catch-at-length is absent and selectivity must be assumed rather than inferred, the reconstruction becomes less empirically anchored. The method still produces a workable initial state, but it does so by relying more strongly on the rest of the species parameterisation and on the user’s assumptions.
 
-## 7.5. Current ambiguities in the configuration structure
+This is not a defect in itself, but it does mean that the same method can behave rather differently depending on the amount and type of information supplied. A module originally designed for one data context has therefore become a more general tool through successive extensions, and this broader flexibility comes at the cost of conceptual simplicity.
 
-## 7.6. Motivation for the planned recoding in the next release
+## 7.3. Limits of the single-species reconstruction
+
+A further limitation concerns the structure of reconstructed population-level initialisation itself. The reconstruction procedure operates species by species, using a single-species approximation to infer a plausible initial demographic structure from biomass, yield, and related life-history information.
+
+This is a reasonable and practical choice, but it is still an approximation. It does not explicitly solve the full multispecies interactions that will govern the simulation once the OSMOSE core simulator starts. Predation interactions, competition effects, and full ecosystem feedbacks are therefore not part of the estimation stage. Instead, they begin only after the reconstructed initial state has been converted into schools and the full simulation is launched.
+
+In practice, this means that the reconstructed state should be understood as a coherent starting approximation rather than as a fully equilibrated ecosystem state. For many applications this is entirely sufficient, especially when followed by an appropriate spin-up. However, it remains a structural limitation of the current method.
+
+## 7.4. Differences in representation levels
+
+Another source of difficulty in the current implementation is the coexistence of multiple representation levels for the initial state. Depending on the workflow, a user may interact with:
+
+- observational and biological inputs used in the reconstruction;
+- a generated population-level parameter block;
+- or a direct school-level file.
+
+These are not equivalent representations, and moving between them is not entirely lossless. A school-level state can be aggregated into a population-level block, but that aggregation loses detailed school identity and explicit spatial information. Conversely, a population-level block can be expanded into schools, but the realised school structure includes random within-class allocation and is not identical to an explicitly provided school file.
+
+This multiplicity of representations is scientifically legitimate, but it complicates both documentation and usage. Users may think they are modifying the initial state directly when they are actually modifying only the inputs used to reconstruct it, or they may assume that a generated population-level block is identical to a school-level initial condition when it is only an aggregate representation of one.
+
+## 7.5. Parameter transparency and naming
+
+The current configuration also suffers from a degree of terminological inertia. Some parameter names are tied to older terminology and do not necessarily reflect the clearest conceptual names for the methods as described in this document. A good example is the activation flag for reconstructed population-level initialisation, whose name still refers to “relative biomass” initialisation, the original name of the implementation even though the method reconstructs much more than biomass alone.
+
+Similarly, some auxiliary outputs or method-specific parameters reflect implementation history rather than a fully harmonised design. This does not prevent the module from being used correctly, but it increases the burden on documentation and user interpretation. In practice, it means that a technically valid configuration can still be conceptually confusing if the user does not know which parameters belong to which stage of the workflow. Parameter naming is something that will be improved in the future.
+
+## 7.6. Reproducibility and inspection
+
+The current module also places strong demands on reproducibility practice. In reconstructed population-level initialisation, the actual initial state used by the OSMOSE core simulator is the generated `population.initialization.*` block, not merely the observational and biological inputs that were used to reconstruct it. If users archive only the input data but not the resulting generated block, then the exact initial state used in a given simulation may be harder to recover later, especially if code or parameter settings evolve.
+
+Likewise, if users rely on direct school-level initialisation, the school-level file itself becomes a key part of the experimental design and must be archived as such. These requirements are manageable, but they make it especially important to distinguish between input data, generated representations, and final runtime state.
+
+## 7.7. Why a broader recoding is planned
+
+Taken together, these limitations explain why a broader recoding of the initialisation module is planned for a future release of OSMOSE. The goal of such a recoding is not to change the scientific motivation of initialisation, but to make the implementation more coherent, more transparent, and easier to use.
+
+A future redesign could, for example, clarify the separation between conceptual methods and utility conversions, harmonise terminology, reduce ambiguity between data-layer and initialisation-layer parameters, and make the expected representations of the initial state more explicit. It could also improve support for data-poor workflows by incorporating them as first-class design cases rather than as later extensions to a method originally conceived for data-rich applications.
+
+With the planned transition of the OSMOSE core simulator to a C++ implementation in version 5, this is also an appropriate moment to revisit the architecture of initialisation more generally. A clearer separation between preprocessing, generated initial-state descriptors, and runtime instantiation would make the module easier both to document and to maintain.
+
+## 7.8. Practical implication for OSMOSE 4.4 users
+
+These limitations should not be interpreted as a reason to avoid the initialisation methods documented here. OSMOSE 4.4 provides workable and scientifically useful routes for constructing initial conditions, and in many applications the current workflows are entirely adequate.
+
+The practical implication is instead that users should approach initialisation with care, especially when working outside the original data-rich design of reconstructed population-level initialisation or when moving between school-level and population-level representations. Clear documentation, explicit archiving of the actual initial-state representation used in a run, and routine inspection of generated initialisation outputs are therefore not optional extras. They are part of good modelling practice under the current implementation.
+
+In that sense, the present document has a dual role. It documents the methods as they exist in OSMOSE 4.4, and it also provides the conceptual clarity needed to use them safely until a more unified module is introduced in a later release.
 
 # 8. Conclusion
 
-## 8.1. Summary of the role of initialisation in OSMOSE
+Initialisation is a core component of OSMOSE rather than a secondary technical detail. Because the model is stochastic, school-based, and structured by size, age, and species interactions, the starting state of a simulation must represent much more than total biomass by species. It must provide, either directly or indirectly, a coherent ecological description of how populations enter the simulation.
 
-## 8.2. Summary of the available methods
+OSMOSE 4.4 currently supports three main conceptual routes for doing so. Direct school-level initialisation provides the most explicit representation, because the initial schools are given directly in a restart-like file. Reconstructed population-level initialisation provides a practical class-based representation from which the OSMOSE core simulator creates schools at runtime. Egg seeding initialisation provides an indirect, reproduction-based route that can help establish or maintain populations when mature spawners are absent. In addition, the codebase includes utility procedures that allow movement between school-level and population-level representations.
 
-## 8.3. Recommendation of the relative-biomass method as the default workflow
+Among these methods, reconstructed population-level initialisation is generally the most suitable default workflow for ordinary applications in OSMOSE 4.4. It offers the most useful balance between realism, control, and practical usability. In particular, it allows users to exploit the standard OSMOSE species parameterisation together with biomass and fishery information to generate a coherent starting state without preparing a complete school-by-school file. For this reason, it occupies the central place in the present documentation.
 
-## 8.4. Final practical message for users of OSMOSE 4.4
+At the same time, the current initialisation module reflects the historical development of the model. It combines methods conceived for different purposes, along with later extensions introduced to broaden applicability. The resulting flexibility is valuable, but it also makes careful terminology, explicit user guidance, and systematic inspection of the initial state especially important.
+
+For users of OSMOSE 4.4, the main practical recommendation is therefore straightforward: choose the initialisation representation that matches the information available, document clearly which representation is actually being used, and inspect the resulting initial state explicitly before treating it as the starting point of a simulation. In most cases, this means working through reconstructed population-level initialisation and preserving both the inputs used for reconstruction and the generated `population.initialization.*` block.
+
+A more systematic redesign of the initialisation module is planned for a later release, but the present implementation remains fully usable provided it is approached with this level of clarity. The purpose of this document is precisely to support that use: to make the current behaviour of OSMOSE 4.4 explicit, understandable, and operational for both technical and applied modelling workflows.
+
 
 # Appendices
 
@@ -849,7 +1253,7 @@ This route is particularly suitable for restart workflows, coupling applications
 The following example illustrates the expected structure of a direct school-based initialisation file:
 
 ```text
-File osmose-peru_v4.x_develop/input/initial_conditions/humboldt-n_1992.nc.0 (NC_FORMAT_CLASSIC):
+File peru-initial_conditions-1992.nc (NC_FORMAT_CLASSIC):
 
      8 variables (excluding dimension variables):
         int species[nschool]
@@ -880,7 +1284,8 @@ File osmose-peru_v4.x_develop/input/initial_conditions/humboldt-n_1992.nc.0 (NC_
 
      2 global attributes:
         step: -1
-        species: 0=anchovy 1=hake 2=sardine 3=jurel 4=caballa 5=meso 6=munida 7=pota 8=euphausidos
+        species: 0=anchovy 1=hake 2=sardine 3=jurel 4=caballa
+        5=meso 6=munida 7=pota 8=euphausidos
 ```
 
 This example shows the essential characteristics of the direct school-based format:
@@ -902,14 +1307,14 @@ population.initialization.relativebiomass.enabled = TRUE
 # used for calculation of natural mortality
 species.egg.stage.duration.sp0 = 2 # in days
 
-observed.biomass.file.sp0 = ../../data/peru_biomass.acousticSurvey-index_month.csv
+observed.biomass.file.sp0 = biomass.acousticSurvey-index_month.csv
 observed.biomass.ndtPerYear.sp0 = 12
 observed.biomass.cutoff.size.sp0 = 5
 
-fisheries.catchatlength.file.sp0 = ../../data/catch_at_length/peru_catchatlength-anchoveta_month.csv
+fisheries.catchatlength.file.sp0 = catchatlength-anchoveta_month.csv
 fisheries.catchatlength.ndtPerYear.sp0 = 12
 
-fisheries.yield.file.sp0 = ../../data/peru_yield_month.csv
+fisheries.yield.file.sp0 = yield_month.csv
 fisheries.yield.ndtPerYear.sp0 = 12
 ```
 
@@ -928,15 +1333,15 @@ The following example shows the type of population-level initialisation block ge
 ```text
 population.initialization.biomass.sp0 = 1000000
 
-population.initialization.relativebiomass.sp0 = 0.28, 0.18, 0.16, 0.14, 0.10, 0.08, 0.06
+population.initialization.relativebiomass.sp0 = 0.28, 0.18, 0.16, 0.14, 0.10, 0.08
 
-population.initialization.size.sp0 = 0.1, 2.8, 5.0, 6.6, 7.9, 8.9, 9.6, 10.1
+population.initialization.size.sp0 = 0.1, 2.8, 5.0, 6.6, 7.9, 8.9, 9.6
 
-population.initialization.age.sp0 = 0.02, 0.06, 0.10, 0.15, 0.19, 0.23, 0.27
+population.initialization.age.sp0 = 0.02, 0.06, 0.10, 0.15, 0.19, 0.23
 
-population.initialization.tl.sp0 = 2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 2.0
+population.initialization.tl.sp0 = 2.0, 2.0, 2.0, 2.0, 2.0, 2.0
 
-population.initialization.nschool.sp0 = 180, 80, 60, 45, 30, 20, 15
+population.initialization.nschool.sp0 = 180, 80, 60, 45, 30, 20
 ```
 
 Two points are especially important when interpreting this block:
@@ -948,21 +1353,23 @@ Two points are especially important when interpreting this block:
 
 The following diagram summarises the workflow of reconstructed population-level initialisation.
 
-```mermaid
-flowchart TD
-    A[Data-layer inputs<br/>biomass, yield, catch-at-length,<br/>egg-stage duration, optional biomass guess]
-    B[Regular OSMOSE species parameterisation<br/>growth, maturity, fecundity,<br/>length-weight, lifespan, sex ratio]
-    C[Internal single-species reconstruction<br/>of initial population structure]
-    D[Generation of population.initialization.*]
-    E[OSMOSE core simulator]
-    F[Creation of initial schools at time zero]
+![Diagram of the population-level initialisation](figures/osmose_initialisation_flowchart.png){#fig:initialisation-flowchart fig-align="center"}
 
-    A --> C
-    B --> C
-    C --> D
-    D --> E
-    E --> F
-```
+<!-- ```mermaid -->
+<!-- flowchart TD -->
+<!--     A[Data-layer inputs<br/>biomass, yield, catch-at-length,<br/>egg-stage duration, optional biomass guess] -->
+<!--     B[Regular OSMOSE species parameterisation<br/>growth, maturity, fecundity,<br/>length-weight, lifespan, sex ratio] -->
+<!--     C[Internal single-species reconstruction<br/>of initial population structure] -->
+<!--     D[Generation of population.initialization.*] -->
+<!--     E[OSMOSE core simulator] -->
+<!--     F[Creation of initial schools at time zero] -->
+
+<!--     A -> C -->
+<!--     B -> C -->
+<!--     C -> D -->
+<!--     D -> E -->
+<!--     E -> F -->
+<!-- ``` -->
 
 This workflow emphasises the distinction between:
 
@@ -1013,3 +1420,6 @@ The following checklist can be used when diagnosing initialisation problems in O
   - the generated `population.initialization.*` block for reconstructed population-level initialisation;
   - the school-level file for direct school-based initialisation.
 - Archive the upstream data-layer inputs as well, so that the origin of the generated initial state remains traceable.
+
+## References
+
