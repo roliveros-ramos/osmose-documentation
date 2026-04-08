@@ -1203,6 +1203,9 @@ For users of OSMOSE 4.4, the main practical recommendation is therefore straight
 
 A more systematic redesign of the initialisation module is planned for a later release, but the present implementation remains fully usable provided it is approached with this level of clarity. The purpose of this document is precisely to support that use: to make the current behaviour of OSMOSE 4.4 explicit, understandable, and operational for both technical and applied modelling workflows.
 
+```{=latex}
+\clearpage
+```
 
 # Appendices
 
