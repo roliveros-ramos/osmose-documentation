@@ -19,7 +19,7 @@ format:
   docx:
     fig-cap-location: bottom
     tbl-cap-location: top
-    # reference-doc: quarto-reference.docx
+    reference-doc: osmose-reference.docx
   pdf:
     pdf-engine: lualatex
     documentclass: scrartcl
@@ -33,7 +33,7 @@ format:
       text: |
         \usepackage{lmodern}
         \usepackage[T1]{fontenc}
-bibliography: spinup_references.bib
+bibliography: osmose_references.bib
 ---
 
 ```{=latex}
